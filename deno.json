@@ -1,0 +1,28 @@
+{
+  "tasks": {
+    "start": "deno run --allow-net --allow-env --unstable-kv main.js",
+    "test": "deno test --allow-net --allow-env --unstable-kv test/*.mjs"
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any"]
+    }
+  },
+  "deploy": {
+    "org": "prasanthsanth524",
+    "app": "hermes-lite-askdesk"
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
