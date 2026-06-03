@@ -14,6 +14,22 @@ It keeps the same contract:
 
 Storage uses Deno KV. The local test path uses an in-memory store.
 
+## Telegram Commands
+
+```text
+/help
+/health
+/system
+/status
+/run <task>
+/recent
+/recent <1-8>
+/task <task-id>
+/status <task-id>
+```
+
+Normal messages are also treated as tasks. Use `/health` or `/system` for cloud, laptop, queue, model, and heartbeat status. Use `/recent` to see latest task IDs, then `/task <id>` to inspect one task.
+
 ## Required Deno Environment Variables
 
 ```text

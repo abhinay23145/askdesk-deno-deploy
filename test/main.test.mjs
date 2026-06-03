@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createApp, MemoryStore } from "../main.js";
+import { splitTask } from "../logic.js";
 
 function testRuntime() {
   const store = new MemoryStore();
@@ -100,6 +101,15 @@ test("telegram pdf task queues for AskDesk and result sends polished answer only
   assert.match(sentMessages[0].body.text, /^Document Brief/);
   assert.doesNotMatch(sentMessages[0].body.text, /Done [a-f0-9]{8}/);
   assert.doesNotMatch(sentMessages[0].body.text, /AskDesk result/i);
+});
+
+test("deno split routes basket save and saved resume job work to AskDesk", () => {
+  const saveSplit = splitTask("save this resume", true);
+  assert.equal(saveSplit.askdesk_steps.length, 1);
+
+  const jobSplit = splitTask("use my saved resume and prepare this job application https://example.com/jobs/python", false);
+  assert.equal(jobSplit.askdesk_steps.length, 1);
+  assert.equal(jobSplit.askdesk_steps[0].status, "waiting_for_laptop");
 });
 
 test("heartbeat stores compact payload for Deno KV limits", async () => {
@@ -255,6 +265,41 @@ test("indexed recent command works when store listing is unavailable", async () 
   assert.equal(recentPayload.command, "recent");
   assert.equal(recentPayload.count, 1);
   assert.match(telegramCalls.at(-1).body.text, /Recent tasks:/);
+});
+
+test("telegram health command sends full system status", async () => {
+  const { app, telegramCalls } = testRuntime();
+
+  await app(
+    new Request("https://deno.test/askdesk/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer ask-token" },
+      body: JSON.stringify({
+        online: true,
+        load: "idle",
+        queue: { running_count: 0, pending_count: 1 },
+        capability_list: ["files", "browser", "proof"],
+        model_status: { usable: true, provider: "nvidia", model: "strong-model" },
+      }),
+    }),
+  );
+
+  const response = await app(
+    new Request("https://deno.test/telegram/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "webhook-secret" },
+      body: JSON.stringify({ message: { chat: { id: 123 }, text: "/health" } }),
+    }),
+  );
+  const payload = await response.json();
+  const sent = telegramCalls.at(-1).body.text;
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.command, "health");
+  assert.match(sent, /Hermes system status/);
+  assert.match(sent, /Cloud: online \(deno-deploy\)/);
+  assert.match(sent, /AskDesk laptop: online/);
+  assert.match(sent, /Laptop capabilities: files, browser, proof/);
 });
 
 test("cloud model falls back when primary model fails", async () => {
