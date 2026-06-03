@@ -166,3 +166,93 @@ test("admin task can be claimed through AskDesk queue", async () => {
   assert.equal(tasksPayload.tasks.length, 1);
   assert.equal(tasksPayload.tasks[0].request, "take screenshot of my screen");
 });
+
+test("indexed queue claims tasks when store listing is unavailable", async () => {
+  class NoListStore extends MemoryStore {
+    async listKeys() {
+      throw new Error("list disabled");
+    }
+  }
+
+  const store = new NoListStore();
+  const app = createApp({
+    store,
+    env: {
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_ALLOWED_CHAT_IDS: "123",
+      TELEGRAM_WEBHOOK_SECRET: "webhook-secret",
+      ASKDESK_TOKEN: "ask-token",
+      ADMIN_TOKEN: "admin-token",
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } }),
+  });
+
+  const createResponse = await app(
+    new Request("https://deno.test/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer admin-token" },
+      body: JSON.stringify({ request: "list files on my laptop", chat_id: "123" }),
+    }),
+  );
+  const createPayload = await createResponse.json();
+  assert.equal(createPayload.task.needs_askdesk, true);
+
+  const tasksResponse = await app(
+    new Request("https://deno.test/askdesk/tasks", {
+      headers: { Authorization: "Bearer ask-token" },
+    }),
+  );
+  const tasksPayload = await tasksResponse.json();
+
+  assert.equal(tasksResponse.status, 200);
+  assert.equal(tasksPayload.tasks.length, 1);
+  assert.equal(tasksPayload.tasks[0].request, "list files on my laptop");
+});
+
+test("indexed recent command works when store listing is unavailable", async () => {
+  class NoListStore extends MemoryStore {
+    async listKeys() {
+      throw new Error("list disabled");
+    }
+  }
+
+  const store = new NoListStore();
+  const telegramCalls = [];
+  const app = createApp({
+    store,
+    env: {
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_ALLOWED_CHAT_IDS: "123",
+      TELEGRAM_WEBHOOK_SECRET: "webhook-secret",
+      ASKDESK_TOKEN: "ask-token",
+      ADMIN_TOKEN: "admin-token",
+    },
+    fetchImpl: async (url, options = {}) => {
+      telegramCalls.push({ url: String(url), body: JSON.parse(options.body || "{}") });
+      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  await app(
+    new Request("https://deno.test/telegram/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "webhook-secret" },
+      body: JSON.stringify({ message: { chat: { id: 123 }, text: "list files on my laptop" } }),
+    }),
+  );
+
+  const recentResponse = await app(
+    new Request("https://deno.test/telegram/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "webhook-secret" },
+      body: JSON.stringify({ message: { chat: { id: 123 }, text: "/recent 5" } }),
+    }),
+  );
+  const recentPayload = await recentResponse.json();
+
+  assert.equal(recentResponse.status, 200);
+  assert.equal(recentPayload.ok, true);
+  assert.equal(recentPayload.command, "recent");
+  assert.equal(recentPayload.count, 1);
+  assert.match(telegramCalls.at(-1).body.text, /Recent tasks:/);
+});
