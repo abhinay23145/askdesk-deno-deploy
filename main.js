@@ -130,8 +130,9 @@ async function routeRequest(request, runtime) {
     const taskId = normalizeTaskId(url.searchParams.get("task") || "");
     return json({
       ok: true,
-      queue_keys: await runtime.store.listKeys("queue:", 20),
-      task_keys: await runtime.store.listKeys("task:", 20),
+      queue_keys: await listKeysSafe(runtime.store, "queue:", 20),
+      task_keys: await listKeysSafe(runtime.store, "task:", 20),
+      queue_index: await getJsonSafe(runtime.store, queueIndexKey()),
       exact_queue: taskId ? await getJsonSafe(runtime.store, queueKey(taskId)) : null,
       exact_task: taskId ? await getJsonSafe(runtime.store, taskKey(taskId)) : null,
     });
@@ -153,6 +154,7 @@ async function routeRequest(request, runtime) {
     task.next_action = Object.prototype.hasOwnProperty.call(result, "next_action") ? result.next_action : defaultResultNextAction(task.status);
     await putTask(runtime.store, task);
     await runtime.store.delete(queueKey(task.id));
+    await removeFromQueueIndex(runtime.store, task.id);
     await maybeSendTelegram(runtime, task.chat_id, formatResultMessage(task));
     return json({ ok: true, task });
   }
@@ -168,7 +170,7 @@ async function routeRequest(request, runtime) {
     const cloudSummary = await runCloudSteps(runtime, split);
     const task = buildTask({ request: requestText, split, chatId: payload.chat_id || "", source: payload.source || "api", cloudSummary });
     await putTask(runtime.store, task);
-    if (task.needs_askdesk) await putJson(runtime.store, queueKey(task.id), { task_id: task.id, created_at: task.created_at });
+    if (task.needs_askdesk) await enqueueAskDeskTask(runtime.store, task);
     return json({ ok: true, task });
   }
 
@@ -234,7 +236,7 @@ async function handleTelegramWebhook(request, runtime) {
   const task = buildTask({ request: requestText, split, chatId, source: "telegram", cloudSummary, attachments });
   await putTask(runtime.store, task);
   if (task.needs_askdesk) {
-    await putJson(runtime.store, queueKey(task.id), { task_id: task.id, created_at: task.created_at });
+    await enqueueAskDeskTask(runtime.store, task);
   }
   if (!task.needs_askdesk || !askdeskOnline) {
     await maybeSendTelegram(runtime, chatId, formatTelegramReply(task));
@@ -243,13 +245,14 @@ async function handleTelegramWebhook(request, runtime) {
 }
 
 async function claimAskDeskTasks(store, limit) {
-  await repairMissingQueueItems(store, limit);
-  const listed = await store.listKeys("queue:", limit);
+  const indexedIds = await getQueueIndex(store);
   const tasks = [];
   const seenTaskIds = new Set();
-  for (const keyName of listed) {
+  const removeTaskIds = new Set();
+  for (const taskId of indexedIds) {
+    if (tasks.length >= limit) break;
+    const keyName = queueKey(taskId);
     const queueItem = (await getJson(store, keyName)) || {};
-    const taskId = queueItem?.task_id || keyName.replace(/^queue:/, "");
     if (queueItem.claimed_until && Date.now() < Number(queueItem.claimed_until)) {
       seenTaskIds.add(taskId);
       continue;
@@ -259,14 +262,19 @@ async function claimAskDeskTasks(store, limit) {
     const claimed = await claimTaskForAskDesk(store, task, queueItem, keyName);
     if (!claimed) {
       await store.delete(keyName);
+      removeTaskIds.add(taskId);
       continue;
     }
     tasks.push(claimed);
-    if (tasks.length >= limit) return tasks;
   }
+  if (removeTaskIds.size) {
+    await putJson(store, queueIndexKey(), indexedIds.filter((taskId) => !removeTaskIds.has(taskId)));
+  }
+  if (tasks.length >= limit) return tasks;
 
   if (tasks.length < limit) {
-    const fallback = await store.listKeys("task:", 100);
+    await repairMissingQueueItems(store, limit - tasks.length);
+    const fallback = await listKeysSafe(store, "task:", 100);
     for (const keyName of fallback) {
       if (tasks.length >= limit) break;
       const task = await getJsonSafe(store, keyName);
@@ -306,6 +314,11 @@ async function claimTaskForAskDesk(store, task, queueItem, keyName) {
   };
 }
 
+async function enqueueAskDeskTask(store, task) {
+  await putJson(store, queueKey(task.id), { task_id: task.id, created_at: task.created_at, attempts: 0 });
+  await addToQueueIndex(store, task.id);
+}
+
 function isClaimableAskDeskTask(task) {
   if (!task?.needs_askdesk || !task.askdesk_steps?.length || task.result) return false;
   if (["completed", "failed"].includes(task.status)) return false;
@@ -313,7 +326,7 @@ function isClaimableAskDeskTask(task) {
 }
 
 async function repairMissingQueueItems(store, maxItems = 5) {
-  const listed = await store.listKeys("task:", 50);
+  const listed = await listKeysSafe(store, "task:", 50);
   let repaired = 0;
   for (const keyName of listed) {
     if (repaired >= maxItems) return;
@@ -327,6 +340,7 @@ async function repairMissingQueueItems(store, maxItems = 5) {
       repaired_at: new Date().toISOString(),
       attempts: 0,
     });
+    await addToQueueIndex(store, task.id);
     repaired += 1;
   }
 }
@@ -337,7 +351,14 @@ async function findTaskForChat(store, chatId, taskIdOrPrefix) {
   const exact = prefix.length > 12 ? await getTask(store, prefix) : null;
   if (exact && exact.chat_id === String(chatId)) return exact;
 
-  const listed = await store.listKeys(taskKey(prefix), 10);
+  const recentIds = await getRecentIndex(store, chatId);
+  for (const taskId of recentIds) {
+    if (!taskId.startsWith(prefix)) continue;
+    const task = await getTask(store, taskId);
+    if (task?.chat_id === String(chatId)) return task;
+  }
+
+  const listed = await listKeysSafe(store, taskKey(prefix), 10);
   for (const keyName of listed) {
     const task = await getJsonSafe(store, keyName);
     if (task?.chat_id === String(chatId)) return task;
@@ -346,11 +367,22 @@ async function findTaskForChat(store, chatId, taskIdOrPrefix) {
 }
 
 async function listRecentTasksForChat(store, chatId, limit) {
-  const listed = await store.listKeys("task:", 100);
-  const tasks = [];
+  const indexedTasks = [];
+  for (const taskId of await getRecentIndex(store, chatId)) {
+    const task = await getTask(store, taskId);
+    if (task?.chat_id === String(chatId)) indexedTasks.push(task);
+    if (indexedTasks.length >= limit) return indexedTasks;
+  }
+
+  const listed = await listKeysSafe(store, "task:", 100);
+  const tasks = [...indexedTasks];
+  const seen = new Set(indexedTasks.map((task) => task.id));
   for (const keyName of listed) {
     const task = await getJsonSafe(store, keyName);
-    if (task?.chat_id === String(chatId)) tasks.push(task);
+    if (task?.chat_id === String(chatId) && !seen.has(task.id)) {
+      tasks.push(task);
+      seen.add(task.id);
+    }
   }
   return tasks
     .sort((left, right) => Date.parse(right.updated_at || right.created_at || 0) - Date.parse(left.updated_at || left.created_at || 0))
@@ -535,7 +567,7 @@ function getTask(store, taskId) {
 }
 
 function putTask(store, task) {
-  return putJson(store, taskKey(task.id), task);
+  return putJson(store, taskKey(task.id), task).then(() => addToRecentIndex(store, task));
 }
 
 async function getJson(store, key) {
@@ -554,12 +586,58 @@ async function putJson(store, key, value) {
   await store.putJson(key, value);
 }
 
+async function listKeysSafe(store, prefix, limit) {
+  try {
+    return await store.listKeys(prefix, limit);
+  } catch {
+    return [];
+  }
+}
+
 function taskKey(taskId) {
   return `task:${taskId}`;
 }
 
 function queueKey(taskId) {
   return `queue:${taskId}`;
+}
+
+function queueIndexKey() {
+  return "queue:index";
+}
+
+function recentIndexKey(chatId) {
+  return `recent:${chatId}`;
+}
+
+async function getQueueIndex(store) {
+  const index = await getJsonSafe(store, queueIndexKey());
+  return Array.isArray(index) ? index.map(normalizeTaskId).filter(Boolean).slice(0, 200) : [];
+}
+
+async function addToQueueIndex(store, taskId) {
+  const id = normalizeTaskId(taskId);
+  if (!id) return;
+  const existing = await getQueueIndex(store);
+  await putJson(store, queueIndexKey(), [id, ...existing.filter((item) => item !== id)].slice(0, 200));
+}
+
+async function removeFromQueueIndex(store, taskId) {
+  const id = normalizeTaskId(taskId);
+  if (!id) return;
+  const existing = await getQueueIndex(store);
+  await putJson(store, queueIndexKey(), existing.filter((item) => item !== id));
+}
+
+async function getRecentIndex(store, chatId) {
+  const index = await getJsonSafe(store, recentIndexKey(chatId));
+  return Array.isArray(index) ? index.map(normalizeTaskId).filter(Boolean).slice(0, 100) : [];
+}
+
+async function addToRecentIndex(store, task) {
+  if (!task?.id || !task.chat_id) return;
+  const existing = await getRecentIndex(store, task.chat_id);
+  await putJson(store, recentIndexKey(task.chat_id), [task.id, ...existing.filter((item) => item !== task.id)].slice(0, 50));
 }
 
 function normalizeTaskId(value) {
