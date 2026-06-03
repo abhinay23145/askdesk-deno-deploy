@@ -102,6 +102,48 @@ test("telegram pdf task queues for AskDesk and result sends polished answer only
   assert.doesNotMatch(sentMessages[0].body.text, /AskDesk result/i);
 });
 
+test("heartbeat stores compact payload for Deno KV limits", async () => {
+  const { app } = testRuntime();
+  const hugeText = "x".repeat(90_000);
+
+  const response = await app(
+    new Request("https://deno.test/askdesk/heartbeat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer ask-token" },
+      body: JSON.stringify({
+        online: true,
+        workspace: hugeText,
+        queue: {
+          running_count: 1,
+          pending_count: 2,
+          completed_count: 3,
+          failed_count: 4,
+          giant: hugeText,
+        },
+        model_status: {
+          usable: true,
+          provider: hugeText,
+          model: hugeText,
+          raw: hugeText,
+        },
+        recent_tasks: [
+          { id: "1", status: "completed", request: hugeText, summary: hugeText },
+          { id: "2", status: "failed", request: hugeText, summary: hugeText },
+          { id: "3", status: "pending", request: hugeText, summary: hugeText },
+          { id: "4", status: "pending", request: hugeText, summary: hugeText },
+        ],
+      }),
+    }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.heartbeat.queue.pending_count, 2);
+  assert.equal(payload.heartbeat.recent_tasks.length, 3);
+  assert.ok(JSON.stringify(payload.heartbeat).length < 10_000);
+});
+
 test("admin task can be claimed through AskDesk queue", async () => {
   const { app } = testRuntime();
 
