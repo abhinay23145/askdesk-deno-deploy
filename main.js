@@ -41,7 +41,8 @@ export class DenoKvStore {
   }
 
   static async open() {
-    return new DenoKvStore(await globalThis.Deno.openKv());
+    const kvPath = globalThis.Deno?.env?.get?.("DENO_KV_PATH") || "";
+    return new DenoKvStore(kvPath ? await globalThis.Deno.openKv(kvPath) : await globalThis.Deno.openKv());
   }
 
   async getJson(key) {
@@ -890,5 +891,6 @@ function prefixType(key) {
 }
 
 if (globalThis.Deno?.serve && import.meta.main) {
-  globalThis.Deno.serve((request) => handleRequest(request));
+  const port = Number.parseInt(globalThis.Deno.env.get("PORT") || globalThis.Deno.env.get("HERMES_PORT") || "8000", 10);
+  globalThis.Deno.serve({ port: Number.isFinite(port) ? port : 8000 }, (request) => handleRequest(request));
 }

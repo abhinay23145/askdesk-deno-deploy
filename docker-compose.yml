@@ -1,0 +1,17 @@
+services:
+  hermes-lite:
+    build: .
+    container_name: hermes-lite
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: ${PORT:-8000}
+      DENO_KV_PATH: /data/hermes-lite.kv
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    volumes:
+      - hermes_lite_data:/data
+
+volumes:
+  hermes_lite_data:

@@ -55,6 +55,36 @@ cd C:\Mark-XXXIX-main\JARVIS\deno\hermes-lite
 deno task start
 ```
 
+Self-hosted/VM mode can use a persistent local KV file and custom port:
+
+```powershell
+$env:PORT="8000"
+$env:DENO_KV_PATH="./data/hermes-lite.kv"
+deno run --allow-net --allow-env --allow-read=./data --allow-write=./data --unstable-kv main.js
+```
+
+## Self-Hosted Docker / VM Run
+
+This folder is also a self-hostable Hermes-lite package for a future free/paid VM.
+
+```bash
+cp .env.example .env
+# edit .env with Telegram, AskDesk, admin, and optional model values
+docker compose up -d --build
+curl http://127.0.0.1:8000/health
+```
+
+The Docker mode stores Deno KV in the `hermes_lite_data` volume.
+
+Workspace helpers:
+
+```powershell
+.\scripts\package_hermes_vm_lite.ps1
+.\scripts\deploy_hermes_vm_lite_bundle.ps1 -VmIp <ip> -SshUsername <user> -SshKeyPath <path> -UseSavedSecrets
+```
+
+The deploy helper requires an existing Ubuntu/Debian VM with Docker Compose installed. Use `scripts\bootstrap_hermes_vm.ps1` first when the VM is fresh.
+
 ## Local Test
 
 ```powershell
