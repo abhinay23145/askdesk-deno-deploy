@@ -197,6 +197,7 @@ export function formatSystemStatus({
   kvBound = false,
   telegramConfigured = false,
   askdeskTokenConfigured = false,
+  mirrorConfigured = false,
   maxHeartbeatAgeSeconds = 120,
 } = {}) {
   const askdeskOnline = isAskDeskHeartbeatFresh(heartbeat, maxHeartbeatAgeSeconds);
@@ -221,6 +222,7 @@ export function formatSystemStatus({
   lines.push(`Storage: ${kvBound ? "ready" : "not ready"}`);
   lines.push(`Telegram: ${telegramConfigured ? "configured" : "not configured"}`);
   lines.push(`AskDesk cloud token: ${askdeskTokenConfigured ? "configured" : "not configured"}`);
+  lines.push(`Failover mirror: ${mirrorConfigured ? "configured" : "not configured"}`);
   if (capabilities.length) lines.push(`Laptop capabilities: ${capabilities.slice(0, 8).join(", ")}`);
   lines.push(
     askdeskOnline

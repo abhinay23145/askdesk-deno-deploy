@@ -177,6 +177,109 @@ test("admin task can be claimed through AskDesk queue", async () => {
   assert.equal(tasksPayload.tasks[0].request, "take screenshot of my screen");
 });
 
+test("admin task mirrors to peer when mirror is configured", async () => {
+  const store = new MemoryStore();
+  const mirrorCalls = [];
+  const app = createApp({
+    store,
+    env: {
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_ALLOWED_CHAT_IDS: "123",
+      TELEGRAM_WEBHOOK_SECRET: "webhook-secret",
+      ASKDESK_TOKEN: "ask-token",
+      ADMIN_TOKEN: "admin-token",
+      TASK_MIRROR_URL: "https://mirror.test",
+      TASK_MIRROR_TOKEN: "mirror-token",
+    },
+    fetchImpl: async (url, options = {}) => {
+      mirrorCalls.push({ url: String(url), headers: Object.fromEntries(new Headers(options.headers)), body: JSON.parse(options.body || "{}") });
+      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  const response = await app(
+    new Request("https://deno.test/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer admin-token" },
+      body: JSON.stringify({ request: "list files on my laptop", chat_id: "123" }),
+    }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(mirrorCalls.length, 1);
+  assert.equal(mirrorCalls[0].url, `https://mirror.test/mirror/tasks/${payload.task.id}`);
+  assert.equal(mirrorCalls[0].headers.authorization, "Bearer mirror-token");
+  assert.equal(mirrorCalls[0].body.task.id, payload.task.id);
+});
+
+test("mirror endpoint stores and queues AskDesk task", async () => {
+  const { app } = testRuntime();
+  const task = {
+    id: "mirror123",
+    request: "take screenshot of my screen",
+    chat_id: "123",
+    source: "mirror-test",
+    status: "askdesk_needed",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    hermes_steps: [],
+    askdesk_steps: [{ owner: "askdesk", text: "take screenshot of my screen", status: "askdesk_running", risk: "low" }],
+    attachments: [],
+    waiting_for: [],
+    done_now: [],
+    summary: "Mirrored task",
+    needs_askdesk: true,
+    next_action: "Send the task to AskDesk now.",
+  };
+
+  const mirrorResponse = await app(
+    new Request("https://deno.test/mirror/tasks/mirror123", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer mirror-token" },
+      body: JSON.stringify({ task }),
+    }),
+  );
+  const mirrorPayload = await mirrorResponse.json();
+
+  assert.equal(mirrorResponse.status, 500);
+  assert.match(mirrorPayload.error, /TASK_MIRROR_TOKEN/);
+
+  const store = new MemoryStore();
+  const mirrorApp = createApp({
+    store,
+    env: {
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_ALLOWED_CHAT_IDS: "123",
+      TELEGRAM_WEBHOOK_SECRET: "webhook-secret",
+      ASKDESK_TOKEN: "ask-token",
+      ADMIN_TOKEN: "admin-token",
+      TASK_MIRROR_TOKEN: "mirror-token",
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } }),
+  });
+
+  const accepted = await mirrorApp(
+    new Request("https://deno.test/mirror/tasks/mirror123", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer mirror-token" },
+      body: JSON.stringify({ task }),
+    }),
+  );
+  const acceptedPayload = await accepted.json();
+  assert.equal(accepted.status, 200);
+  assert.equal(acceptedPayload.queued, true);
+
+  const tasksResponse = await mirrorApp(
+    new Request("https://deno.test/askdesk/tasks", {
+      headers: { Authorization: "Bearer ask-token" },
+    }),
+  );
+  const tasksPayload = await tasksResponse.json();
+  assert.equal(tasksPayload.tasks.length, 1);
+  assert.equal(tasksPayload.tasks[0].task_id, "mirror123");
+});
+
 test("indexed queue claims tasks when store listing is unavailable", async () => {
   class NoListStore extends MemoryStore {
     async listKeys() {

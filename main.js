@@ -104,6 +104,7 @@ async function routeRequest(request, runtime) {
       telegram_configured: Boolean(envValue(runtime.env, "TELEGRAM_BOT_TOKEN")),
       askdesk_token_configured: Boolean(envValue(runtime.env, "ASKDESK_TOKEN")),
       model_configured: Boolean(envValue(runtime.env, "MODEL_API_BASE_URL") && envValue(runtime.env, "MODEL_API_KEY") && modelNames(runtime.env).length),
+      mirror_configured: Boolean(envValue(runtime.env, "TASK_MIRROR_URL") && envValue(runtime.env, "TASK_MIRROR_TOKEN")),
     });
   }
 
@@ -156,8 +157,20 @@ async function routeRequest(request, runtime) {
     await putTask(runtime.store, task);
     await runtime.store.delete(queueKey(task.id));
     await removeFromQueueIndex(runtime.store, task.id);
+    await mirrorTaskToPeer(runtime, task);
     await maybeSendTelegram(runtime, task.chat_id, formatResultMessage(task));
     return json({ ok: true, task });
+  }
+
+  const mirrorMatch = path.match(/^\/mirror\/tasks\/([a-zA-Z0-9_-]+)$/);
+  if (request.method === "POST" && mirrorMatch) {
+    requireMirrorAuth(request, runtime.env);
+    const taskId = normalizeTaskId(mirrorMatch[1]);
+    const payload = await request.json();
+    const task = normalizeMirroredTask(payload.task, taskId);
+    await putTask(runtime.store, task);
+    const queued = await reconcileMirroredQueue(runtime.store, task);
+    return json({ ok: true, task_id: task.id, queued });
   }
 
   if (request.method === "POST" && path === "/tasks") {
@@ -172,6 +185,7 @@ async function routeRequest(request, runtime) {
     const task = buildTask({ request: requestText, split, chatId: payload.chat_id || "", source: payload.source || "api", cloudSummary });
     await putTask(runtime.store, task);
     if (task.needs_askdesk) await enqueueAskDeskTask(runtime.store, task);
+    await mirrorTaskToPeer(runtime, task);
     return json({ ok: true, task });
   }
 
@@ -220,6 +234,7 @@ async function handleTelegramWebhook(request, runtime) {
         kvBound: true,
         telegramConfigured: Boolean(envValue(runtime.env, "TELEGRAM_BOT_TOKEN")),
         askdeskTokenConfigured: Boolean(envValue(runtime.env, "ASKDESK_TOKEN")),
+        mirrorConfigured: Boolean(envValue(runtime.env, "TASK_MIRROR_URL") && envValue(runtime.env, "TASK_MIRROR_TOKEN")),
       }),
     );
     return json({ ok: true, command: "health", askdesk_online: isAskDeskHeartbeatFresh(heartbeat), queue_count: queueIds.length });
@@ -581,6 +596,12 @@ function requireAskDeskAuth(request, env) {
   requireBearer(request, token, "invalid AskDesk token");
 }
 
+function requireMirrorAuth(request, env) {
+  const token = envValue(env, "TASK_MIRROR_TOKEN");
+  if (!token) throw statusError("TASK_MIRROR_TOKEN is not configured", 500);
+  requireBearer(request, token, "invalid mirror token");
+}
+
 function requireAdminAuth(request, env) {
   const token = envValue(env, "ADMIN_TOKEN");
   if (!token) throw statusError("ADMIN_TOKEN is not configured", 500);
@@ -622,6 +643,62 @@ async function getJsonSafe(store, key) {
 
 async function putJson(store, key, value) {
   await store.putJson(key, value);
+}
+
+async function mirrorTaskToPeer(runtime, task) {
+  const baseUrl = envValue(runtime.env, "TASK_MIRROR_URL").replace(/\/+$/g, "");
+  const token = envValue(runtime.env, "TASK_MIRROR_TOKEN");
+  if (!baseUrl || !token || !task?.id) return { configured: false };
+  try {
+    const response = await runtime.fetchImpl(`${baseUrl}/mirror/tasks/${encodeURIComponent(task.id)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        source: "deno-primary",
+        mirrored_at: new Date().toISOString(),
+        task,
+      }),
+    });
+    return { configured: true, ok: response.ok, status: response.status };
+  } catch (error) {
+    console.warn("task mirror failed", publicError(error));
+    return { configured: true, ok: false, error: publicError(error) };
+  }
+}
+
+function normalizeMirroredTask(task, expectedId) {
+  if (!isPlainObject(task)) throw statusError("task is required", 400);
+  const id = normalizeTaskId(task.id);
+  if (!id || id !== expectedId) throw statusError("task id mismatch", 400);
+  return {
+    ...task,
+    id,
+    request: normalizeText(task.request || ""),
+    chat_id: String(task.chat_id || ""),
+    status: normalizeText(task.status || "hermes_running"),
+    updated_at: normalizeText(task.updated_at || new Date().toISOString()),
+    created_at: normalizeText(task.created_at || task.updated_at || new Date().toISOString()),
+    hermes_steps: Array.isArray(task.hermes_steps) ? task.hermes_steps : [],
+    askdesk_steps: Array.isArray(task.askdesk_steps) ? task.askdesk_steps : [],
+    attachments: Array.isArray(task.attachments) ? task.attachments : [],
+    waiting_for: Array.isArray(task.waiting_for) ? task.waiting_for : [],
+    done_now: Array.isArray(task.done_now) ? task.done_now : [],
+    needs_askdesk: Boolean(task.needs_askdesk),
+    next_action: normalizeText(task.next_action || ""),
+  };
+}
+
+async function reconcileMirroredQueue(store, task) {
+  if (isClaimableAskDeskTask(task)) {
+    await enqueueAskDeskTask(store, task);
+    return true;
+  }
+  await store.delete(queueKey(task.id));
+  await removeFromQueueIndex(store, task.id);
+  return false;
 }
 
 async function listKeysSafe(store, prefix, limit) {
@@ -732,6 +809,8 @@ function envFromDeno() {
     MODEL_API_KEY: envValue({}, "MODEL_API_KEY"),
     MODEL_NAME: envValue({}, "MODEL_NAME"),
     MODEL_FALLBACK_NAMES: envValue({}, "MODEL_FALLBACK_NAMES"),
+    TASK_MIRROR_URL: envValue({}, "TASK_MIRROR_URL"),
+    TASK_MIRROR_TOKEN: envValue({}, "TASK_MIRROR_TOKEN"),
   };
 }
 
