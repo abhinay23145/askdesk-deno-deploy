@@ -256,3 +256,48 @@ test("indexed recent command works when store listing is unavailable", async () 
   assert.equal(recentPayload.count, 1);
   assert.match(telegramCalls.at(-1).body.text, /Recent tasks:/);
 });
+
+test("cloud model falls back when primary model fails", async () => {
+  const store = new MemoryStore();
+  const seenModels = [];
+  const app = createApp({
+    store,
+    env: {
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_ALLOWED_CHAT_IDS: "123",
+      TELEGRAM_WEBHOOK_SECRET: "webhook-secret",
+      ASKDESK_TOKEN: "ask-token",
+      ADMIN_TOKEN: "admin-token",
+      MODEL_API_BASE_URL: "https://model.test/v1",
+      MODEL_API_KEY: "model-key",
+      MODEL_NAME: "bad-model",
+      MODEL_FALLBACK_NAMES: "good-model",
+    },
+    fetchImpl: async (url, options = {}) => {
+      const body = JSON.parse(options.body || "{}");
+      if (String(url).includes("/chat/completions")) {
+        seenModels.push(body.model);
+        if (body.model === "bad-model") {
+          return new Response(JSON.stringify({ error: "bad" }), { status: 500, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ choices: [{ message: { content: "Fallback model answered strongly." } }] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  const response = await app(
+    new Request("https://deno.test/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer admin-token" },
+      body: JSON.stringify({ request: "plan a difficult failover recovery", chat_id: "123" }),
+    }),
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(seenModels, ["bad-model", "good-model"]);
+  assert.equal(payload.task.summary, "Fallback model answered strongly.");
+});
