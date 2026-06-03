@@ -25,6 +25,7 @@ ADMIN_TOKEN=
 MODEL_API_BASE_URL=
 MODEL_API_KEY=
 MODEL_NAME=
+MODEL_FALLBACK_NAMES=
 ```
 
 `MODEL_*` is optional. Without it, Deno Hermes-lite still receives Telegram tasks, stores queue state, and delegates laptop-local work to AskDesk.
@@ -132,6 +133,7 @@ Optional model variables:
 deno deploy env add --token $env:DENO_DEPLOY_TOKEN --org $env:DENO_DEPLOY_ORG --app hermes-lite-askdesk MODEL_API_BASE_URL "<model-api-base-url>"
 deno deploy env add --token $env:DENO_DEPLOY_TOKEN --org $env:DENO_DEPLOY_ORG --app hermes-lite-askdesk --secret MODEL_API_KEY "<model-api-key>"
 deno deploy env add --token $env:DENO_DEPLOY_TOKEN --org $env:DENO_DEPLOY_ORG --app hermes-lite-askdesk MODEL_NAME "<model-name>"
+deno deploy env add --token $env:DENO_DEPLOY_TOKEN --org $env:DENO_DEPLOY_ORG --app hermes-lite-askdesk MODEL_FALLBACK_NAMES "<comma-separated-fallback-models>"
 ```
 
 Deploy production:
