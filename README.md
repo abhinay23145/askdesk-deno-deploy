@@ -160,10 +160,18 @@ cd C:\Mark-XXXIX-main\JARVIS
 Health-based switch-only mode:
 
 ```powershell
-.\scripts\test_hermes_lite_failover.ps1 -Target auto -SwitchOnly
+.\scripts\test_hermes_lite_failover.ps1 -Target auto -Primary deno -SwitchOnly
 ```
 
-`auto` uses Cloudflare when Cloudflare health is OK and Deno when Cloudflare health fails. To make failover automatic during a real Cloudflare outage or credit/quota block, run the switch-only command from a scheduler outside Cloudflare.
+`auto` uses the selected primary when that primary is healthy and the other host as backup. For the current setup, Deno is the primary because Cloudflare credits are risky.
+
+Install the local Windows monitor for outside use when the laptop is on:
+
+```powershell
+.\scripts\install_hermes_lite_failover_monitor.ps1 -Primary deno -IntervalMinutes 5
+```
+
+This keeps Telegram and AskDesk pointed at the healthy host. It only restarts AskDesk when the active host actually changes. If the laptop is physically off, Windows cannot run this monitor; Deno remains the active always-on Telegram front door.
 
 Set Telegram webhook to the Deno URL:
 
