@@ -102,7 +102,7 @@ async function routeRequest(request, runtime) {
       kv_bound: true,
       telegram_configured: Boolean(envValue(runtime.env, "TELEGRAM_BOT_TOKEN")),
       askdesk_token_configured: Boolean(envValue(runtime.env, "ASKDESK_TOKEN")),
-      model_configured: Boolean(envValue(runtime.env, "MODEL_API_BASE_URL") && envValue(runtime.env, "MODEL_API_KEY") && envValue(runtime.env, "MODEL_NAME")),
+      model_configured: Boolean(envValue(runtime.env, "MODEL_API_BASE_URL") && envValue(runtime.env, "MODEL_API_KEY") && modelNames(runtime.env).length),
     });
   }
 
@@ -393,8 +393,8 @@ async function runCloudSteps(runtime, split) {
   if (!split.hermes_steps?.length) return "";
   const baseUrl = envValue(runtime.env, "MODEL_API_BASE_URL");
   const apiKey = envValue(runtime.env, "MODEL_API_KEY");
-  const model = envValue(runtime.env, "MODEL_NAME");
-  if (!(baseUrl && apiKey && model)) {
+  const models = modelNames(runtime.env);
+  if (!(baseUrl && apiKey && models.length)) {
     return split.hermes_steps.length
       ? `Cloud side captured ${split.hermes_steps.length} step(s). Configure MODEL_API_* for deeper cloud reasoning/research.`
       : "";
@@ -412,24 +412,41 @@ async function runCloudSteps(runtime, split) {
     "",
     ...split.hermes_steps.map((step, index) => `${index + 1}. ${step.text}`),
   ].join("\n");
-  const response = await runtime.fetchImpl(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.25,
-      max_tokens: 500,
-    }),
-  });
-  if (!response.ok) {
-    return `Cloud side captured ${split.hermes_steps.length} step(s), but model call failed with HTTP ${response.status}.`;
+  const failures = [];
+  for (const model of models) {
+    const response = await runtime.fetchImpl(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.25,
+        max_tokens: 500,
+      }),
+    });
+    if (!response.ok) {
+      failures.push(`${model}: HTTP ${response.status}`);
+      continue;
+    }
+    const payload = await response.json();
+    const content = normalizeText(payload?.choices?.[0]?.message?.content || "");
+    if (content) return content;
+    failures.push(`${model}: empty response`);
   }
-  const payload = await response.json();
-  return normalizeText(payload?.choices?.[0]?.message?.content || "") || `Cloud side captured ${split.hermes_steps.length} step(s).`;
+  const detail = failures.length ? ` (${failures.slice(0, 3).join("; ")})` : "";
+  return `Cloud side captured ${split.hermes_steps.length} step(s), but model call failed${detail}.`;
+}
+
+function modelNames(env) {
+  const names = [];
+  for (const item of [envValue(env, "MODEL_NAME"), ...envValue(env, "MODEL_FALLBACK_NAMES").split(",")]) {
+    const name = String(item || "").trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names.slice(0, 5);
 }
 
 async function maybeSendTelegram(runtime, chatId, text) {
@@ -692,6 +709,7 @@ function envFromDeno() {
     MODEL_API_BASE_URL: envValue({}, "MODEL_API_BASE_URL"),
     MODEL_API_KEY: envValue({}, "MODEL_API_KEY"),
     MODEL_NAME: envValue({}, "MODEL_NAME"),
+    MODEL_FALLBACK_NAMES: envValue({}, "MODEL_FALLBACK_NAMES"),
   };
 }
 
