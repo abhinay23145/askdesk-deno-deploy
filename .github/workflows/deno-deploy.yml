@@ -1,0 +1,33 @@
+name: Deploy Deno Hermes Lite
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.1
+
+      - name: Check
+        run: deno check main.js
+
+      - name: Test
+        run: deno task test
+
+      - name: Deploy to Deno
+        env:
+          DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
+        run: deno deploy --token "$DENO_DEPLOY_TOKEN" --org prasanthsanth524 --app hermes-lite-askdesk --prod .
