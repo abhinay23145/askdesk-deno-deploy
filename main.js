@@ -113,13 +113,7 @@ async function routeRequest(request, runtime) {
   if (request.method === "POST" && path === "/askdesk/heartbeat") {
     requireAskDeskAuth(request, runtime.env);
     const payload = await request.json();
-    const heartbeat = {
-      ...payload,
-      service: "askdesk",
-      online: true,
-      timestamp: Math.floor(Date.now() / 1000),
-      received_at: new Date().toISOString(),
-    };
+    const heartbeat = compactHeartbeat(payload);
     await putJson(runtime.store, "askdesk:heartbeat", heartbeat);
     return json({ ok: true, stored: true, heartbeat });
   }
@@ -621,6 +615,56 @@ function envFromDeno() {
     MODEL_API_KEY: envValue({}, "MODEL_API_KEY"),
     MODEL_NAME: envValue({}, "MODEL_NAME"),
   };
+}
+
+function compactHeartbeat(payload = {}) {
+  const queue = isPlainObject(payload.queue) ? payload.queue : {};
+  const modelStatus = isPlainObject(payload.model_status) ? payload.model_status : {};
+  const recentTasks = Array.isArray(payload.recent_tasks) ? payload.recent_tasks.slice(0, 3).map(compactRecentTask) : [];
+  const capabilityList = Array.isArray(payload.capability_list)
+    ? payload.capability_list.map((item) => String(item).slice(0, 80)).slice(0, 40)
+    : Object.entries(isPlainObject(payload.capabilities) ? payload.capabilities : {})
+        .filter(([, enabled]) => Boolean(enabled))
+        .map(([name]) => String(name).slice(0, 80))
+        .slice(0, 40);
+  return {
+    ok: payload.ok !== false,
+    service: "askdesk",
+    online: true,
+    version: String(payload.version || "").slice(0, 40),
+    workspace: String(payload.workspace || "").slice(0, 240),
+    timestamp: Math.floor(Date.now() / 1000),
+    received_at: new Date().toISOString(),
+    load: String(payload.load || "idle").slice(0, 40),
+    capability_list: capabilityList,
+    queue: {
+      running_count: Number(queue.running_count || 0),
+      pending_count: Number(queue.pending_count || 0),
+      completed_count: Number(queue.completed_count || 0),
+      failed_count: Number(queue.failed_count || 0),
+    },
+    model_status: {
+      usable: Boolean(modelStatus.usable),
+      provider: String(modelStatus.provider || modelStatus.current_provider || "").slice(0, 80),
+      model: String(modelStatus.model || modelStatus.current_model || "").slice(0, 120),
+      ladder: Array.isArray(modelStatus.ladder) ? modelStatus.ladder.map((item) => String(item).slice(0, 80)).slice(0, 10) : [],
+    },
+    recent_tasks: recentTasks,
+  };
+}
+
+function compactRecentTask(task = {}) {
+  return {
+    id: String(task.id || "").slice(0, 80),
+    status: String(task.status || "").slice(0, 40),
+    request: String(task.request || "").slice(0, 200),
+    summary: String(task.summary || task.error || "").slice(0, 240),
+    updated_at: String(task.updated_at || task.created_at || "").slice(0, 80),
+  };
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function envValue(env, name) {
