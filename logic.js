@@ -186,10 +186,57 @@ export function formatRecentTasks(tasks) {
   return lines.join("\n").slice(0, 3900);
 }
 
+export function formatSystemStatus({
+  mode = "hermes-lite",
+  heartbeat = null,
+  queueCount = 0,
+  modelConfigured = false,
+  kvBound = false,
+  telegramConfigured = false,
+  askdeskTokenConfigured = false,
+  maxHeartbeatAgeSeconds = 120,
+} = {}) {
+  const askdeskOnline = isAskDeskHeartbeatFresh(heartbeat, maxHeartbeatAgeSeconds);
+  const heartbeatAge = heartbeatAgeSeconds(heartbeat);
+  const queue = heartbeat?.queue || {};
+  const model = heartbeat?.model_status || {};
+  const capabilities = Array.isArray(heartbeat?.capability_list) ? heartbeat.capability_list : [];
+  const lines = ["Hermes system status"];
+  lines.push(`Cloud: online (${mode})`);
+  lines.push(`AskDesk laptop: ${askdeskOnline ? "online" : "offline"}`);
+  if (heartbeatAge !== null) lines.push(`Last laptop heartbeat: ${heartbeatAge}s ago`);
+  lines.push(`Cloud queue: ${Number(queueCount || 0)} waiting`);
+  if (heartbeat?.load) lines.push(`AskDesk load: ${heartbeat.load}`);
+  if (queue.running_count || queue.pending_count) {
+    lines.push(`AskDesk queue: ${Number(queue.running_count || 0)} running, ${Number(queue.pending_count || 0)} pending`);
+  }
+  lines.push(`Cloud model: ${modelConfigured ? "configured" : "not configured"}`);
+  if (model.usable || model.provider || model.model) {
+    const modelParts = [model.provider, model.model].filter(Boolean).join(" / ");
+    lines.push(`AskDesk model: ${model.usable ? "usable" : "not usable"}${modelParts ? ` (${modelParts})` : ""}`);
+  }
+  lines.push(`Storage: ${kvBound ? "ready" : "not ready"}`);
+  lines.push(`Telegram: ${telegramConfigured ? "configured" : "not configured"}`);
+  lines.push(`AskDesk cloud token: ${askdeskTokenConfigured ? "configured" : "not configured"}`);
+  if (capabilities.length) lines.push(`Laptop capabilities: ${capabilities.slice(0, 8).join(", ")}`);
+  lines.push(
+    askdeskOnline
+      ? "Use normal task text. Laptop-local work can run now."
+      : "Laptop-local work will queue; cloud-safe work still runs now.",
+  );
+  return lines.join("\n").slice(0, 3900);
+}
+
 export function isAskDeskHeartbeatFresh(heartbeat, maxAgeSeconds = 120) {
   if (!heartbeat || !heartbeat.timestamp) return false;
   const ageMs = Date.now() - Number(heartbeat.timestamp) * 1000;
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= maxAgeSeconds * 1000;
+}
+
+function heartbeatAgeSeconds(heartbeat) {
+  if (!heartbeat?.timestamp) return null;
+  const age = Math.floor(Date.now() / 1000) - Number(heartbeat.timestamp);
+  return Number.isFinite(age) && age >= 0 ? age : null;
 }
 
 export function normalizeText(value) {

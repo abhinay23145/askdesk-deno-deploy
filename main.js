@@ -1,6 +1,7 @@
 import {
   buildTask,
   formatRecentTasks,
+  formatSystemStatus,
   formatTaskStatus,
   formatTelegramReply,
   isAskDeskHeartbeatFresh,
@@ -202,6 +203,26 @@ async function handleTelegramWebhook(request, runtime) {
   if (text === "/start" || text === "/help") {
     await maybeSendTelegram(runtime, chatId, helpText());
     return json({ ok: true, command: "help" });
+  }
+  if (/^\/(?:health|system)$/i.test(text)) {
+    const heartbeat = await getJson(runtime.store, "askdesk:heartbeat");
+    const queueIds = await getQueueIndex(runtime.store);
+    await maybeSendTelegram(
+      runtime,
+      chatId,
+      formatSystemStatus({
+        mode: "deno-deploy",
+        heartbeat,
+        queueCount: queueIds.length,
+        modelConfigured: Boolean(
+          envValue(runtime.env, "MODEL_API_BASE_URL") && envValue(runtime.env, "MODEL_API_KEY") && modelNames(runtime.env).length,
+        ),
+        kvBound: true,
+        telegramConfigured: Boolean(envValue(runtime.env, "TELEGRAM_BOT_TOKEN")),
+        askdeskTokenConfigured: Boolean(envValue(runtime.env, "ASKDESK_TOKEN")),
+      }),
+    );
+    return json({ ok: true, command: "health", askdesk_online: isAskDeskHeartbeatFresh(heartbeat), queue_count: queueIds.length });
   }
   if (text === "/status") {
     const heartbeat = await getJson(runtime.store, "askdesk:heartbeat");
@@ -683,6 +704,7 @@ function helpText() {
     "Hermes-lite online.",
     "Send normal task text or /run <task>.",
     "I do cloud-safe work now and queue laptop-local work for AskDesk.",
+    "Use /health or /system for full system status.",
     "Use /status to check whether AskDesk laptop is online.",
     "Use /recent to list recent tasks.",
     "Use /task <id> or /status <id> to inspect a task.",
